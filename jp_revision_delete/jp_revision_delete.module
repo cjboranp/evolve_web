@@ -1,0 +1,76 @@
+<?php
+
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Url;
+use Drupal\node\Entity\Node;
+use Drupal\Core\Database\Database;
+use Drupal\Component\Utility\Html;
+
+
+/**
+ * get_revision_overflow_nids - Get list of Node IDs that are over revision limit. 100 is the current amount.
+ * DB select used to get vid with counts higher than 1000. default 100
+ */
+function get_revision_overflow_nids( $revision_limit = 100 ) {
+  $query = \Drupal::database()->select('node_revision', 'n');
+  $query->addField('n', 'nid');
+  $query->addExpression('COUNT(n.vid)', 'count');
+  $query->groupBy('n.nid');
+  $query->orderBy('nid');
+  $query->havingCondition('count',1000,">");
+  $query->orderBy('count', 'DESC');
+  $query->range(0, $revision_limit);
+  $result = $query->execute()->fetchAll();
+  return $result;
+}
+
+/**
+ * get_deletable_revisions - gets vid's of nodes with greater than 100 revisions.
+ * If the nid has 101, it will return the 1 ID for that node.
+ */
+function get_deletable_revisions($nid, $records = 5000) {
+  // Query uses 2 columns to order. Some revisions all come in at the same timestamp.
+  // We need to keep the latest 100. To do this we order by timestamp + vid with the first 100 offset.
+  // DESC for revision timestamp means keeping the newest 100 and the date descends from there (truncating the old).
+  $query = \Drupal::database()->select('node_revision', 'n');
+  $query->addField('n', 'vid');  
+  $query->orderBy('revision_timestamp', 'DESC');
+  $query->orderBy('vid', 'DESC');
+  $query->condition('nid', $nid);
+   $query->range(100, $records);
+  $result = $query->execute()->fetchAll();
+  return $result;
+}
+
+/* 
+* Implements hook_cron - Using hook cron to create a lighter way of removing older revisions.
+* Get first 5 nids with revisions > 1000 as per business rules. These are not set in Drupal Config
+* to prevent from increasing the numbers beyond what the server can handle.
+*/
+function jp_revision_delete_cron() { 
+  //$nids stores ids of nodes that have > 1000
+  $nids = get_revision_overflow_nids(5);
+  $vids = null;
+  if(!empty($nids)) {
+    foreach($nids as $nid) {
+      $node_storage = \Drupal::entityTypeManager()->getStorage('node');
+      $node = $node_storage->load($nid->nid);
+      $published_vid = $node->get('vid')->value;
+      $queue_factory = \Drupal::service('queue');
+      $queue = $queue_factory->get('jp_revision_delete');
+      $queue->createQueue();
+      // Gets a list of the oldest revisions based on the current nid
+      $vids = get_deletable_revisions($nid->nid,1000);
+      // Add some fake data.
+      // Create item to queue.
+      if(!empty($vids)) {
+        foreach($vids as $value) {    
+          // Ensure we never remove the current published VID.
+          if($value->vid != $published_vid) {
+            $queue->createItem(array('nid' => $nid->nid, 'vid' => $value->vid));
+          }
+        }
+      }
+    }
+  }
+}

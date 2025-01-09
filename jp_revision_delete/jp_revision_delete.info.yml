@@ -1,0 +1,6 @@
+name: JP Revision Delete
+type: module
+description: 'Lightweight Revision Clean up Program Using Cron'
+package: unex
+version: ^9 || ^10
+core_version_requirement: ^9 || ^10
